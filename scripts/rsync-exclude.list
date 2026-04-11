@@ -11,3 +11,6 @@ stats/
 .rsync-nas.lock/
 scripts/last-flush.json
 scripts/state.json
+# QNAP system directories — cannot be deleted by rsync (Permission denied)
+@Recently-Snapshot/
+@Recently-Snapshot

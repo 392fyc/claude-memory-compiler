@@ -11,12 +11,10 @@
 #   - Always exits 0 so Task Scheduler doesn't flag red; failures logged.
 #   - Single-instance lock prevents overlapping runs.
 #
-# Requires: rsync, ssh, ~/.ssh/id_ed25519.
-# On Windows hosts without native rsync, install via:
-#   - `choco install rsync`  (Chocolatey)
-#   - or MSYS2: `pacman -S rsync`
-#   - or cwRsync bundle
-# Not available in winget as of Apr 2026.
+# Requires: cwRsync (via scoop: `scoop install cwrsync`), ~/.ssh/id_ed25519.
+# The actual rsync invocation is delegated to rsync-invoke.ps1 (PowerShell)
+# to avoid the Cygwin/MSYS2 file-descriptor incompatibility that occurs when
+# cwRsync is called directly from Git Bash.
 
 set -u  # strict unset-var; intentionally NOT set -e so logging always completes
 
@@ -28,6 +26,7 @@ SSH_KEY="${HOME}/.ssh/id_ed25519"
 EXCLUDE_FILE="${AGENTKB_DIR}/scripts/rsync-exclude.list"
 LOG_FILE="${AGENTKB_DIR}/scripts/rsync.log"
 LOCKDIR="${AGENTKB_DIR}/scripts/.rsync-nas.lock"
+PS1_INVOKE="${AGENTKB_DIR}/scripts/rsync-invoke.ps1"
 
 timestamp() { date '+%Y-%m-%d %H:%M:%S%z'; }
 log() { echo "$(timestamp) $*" >> "$LOG_FILE"; }
@@ -39,13 +38,15 @@ if ! mkdir "$LOCKDIR" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
 
-# Pre-flight: rsync / ssh / key / exclude file present
-for bin in rsync ssh; do
-  if ! command -v "$bin" >/dev/null 2>&1; then
-    log "FAIL: $bin not found on PATH"
-    exit 0
-  fi
-done
+# Pre-flight checks
+if ! command -v powershell.exe >/dev/null 2>&1; then
+  log "FAIL: powershell.exe not found on PATH"
+  exit 0
+fi
+if [ ! -f "$PS1_INVOKE" ]; then
+  log "FAIL: rsync-invoke.ps1 missing at $PS1_INVOKE"
+  exit 0
+fi
 if [ ! -f "$SSH_KEY" ]; then
   log "FAIL: ssh key missing at $SSH_KEY"
   exit 0
@@ -61,14 +62,11 @@ fi
 
 log "START rsync $LOCAL_SRC -> $REMOTE_HOST:$REMOTE_DIR"
 
-rsync \
-  -az \
-  --delete \
-  --exclude-from="$EXCLUDE_FILE" \
-  -e "ssh -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new" \
-  "$LOCAL_SRC" \
-  "${REMOTE_HOST}:${REMOTE_DIR}" \
-  >> "$LOG_FILE" 2>&1
+# Delegate rsync to PowerShell to avoid Cygwin/MSYS2 fd incompatibility.
+# MSYS_NO_PATHCONV=1 prevents Git Bash from mangling the Windows path
+# before passing it to powershell.exe -File.
+MSYS_NO_PATHCONV=1 powershell.exe -NonInteractive -ExecutionPolicy Bypass \
+  -File "$PS1_INVOKE" >> "$LOG_FILE" 2>&1
 RC=$?
 log "END rsync rc=$RC"
 

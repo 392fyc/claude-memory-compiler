@@ -72,6 +72,17 @@ def append_to_daily_log(content: str, section: str = "Session") -> None:
         f.write(entry)
 
 
+def _log_cli_stderr(line: str) -> None:
+    """Callback: forward every bundled CLI stderr line into flush.log.
+
+    Without this, SDK ProcessError only surfaces the hardcoded string
+    "Check stderr output for details" (subprocess_cli.py line 616),
+    and the actual subprocess stderr is discarded because
+    ClaudeAgentOptions.stderr defaults to None (line 378).
+    """
+    logging.error("[bundled-cli stderr] %s", line)
+
+
 async def run_flush(context: str) -> str:
     """Use Claude Agent SDK to extract important knowledge from conversation context."""
     from claude_agent_sdk import (
@@ -123,6 +134,7 @@ respond with exactly: FLUSH_OK
                 cwd=str(ROOT),
                 allowed_tools=[],
                 max_turns=2,
+                stderr=_log_cli_stderr,
             ),
         ):
             if isinstance(message, AssistantMessage):
@@ -134,6 +146,21 @@ respond with exactly: FLUSH_OK
     except Exception as e:
         import traceback
         logging.error("Agent SDK error: %s\n%s", e, traceback.format_exc())
+        # Diagnostic: dump Claude-related env vars on failure so PreCompact vs
+        # SessionEnd divergence can be isolated. Values truncated to 200 chars.
+        claude_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k.startswith(("CLAUDE_", "MCP_", "ANTHROPIC_"))
+        }
+        logging.error(
+            "[env-diagnostic] %d Claude-related env vars present: %s",
+            len(claude_env),
+            sorted(claude_env.keys()),
+        )
+        for k, v in sorted(claude_env.items()):
+            val = v[:200] if isinstance(v, str) else v
+            logging.error("[env-diagnostic] %s=%r", k, val)
         response = f"FLUSH_ERROR: {type(e).__name__}: {e}"
 
     return response

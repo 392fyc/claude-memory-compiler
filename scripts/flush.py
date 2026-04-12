@@ -127,6 +127,18 @@ respond with exactly: FLUSH_OK
 
     response = ""
 
+    # Strip Mercury-specific env vars that confuse the nested bundled claude.exe.
+    # CLAUDE_CODE_USE_POWERSHELL_TOOL: makes the CLI shell out to PowerShell;
+    # nested invocations intermittently exit code 1 because the PowerShell context
+    # of the parent session is not available to the child. Root-cause confirmed via
+    # env-diagnostic in flush.log (2026-04-12 17:08:56 failure, Mercury #232).
+    # CLAUDE_PROJECT_DIR: inheriting the parent's project dir conflicts with cwd=ROOT.
+    # CLAUDE_CODE_ENTRYPOINT is already overridden to 'sdk-py' by the SDK itself.
+    # flush.py is a fire-once background process; mutating os.environ is safe here.
+    _STRIP_FOR_CHILD = ("CLAUDE_CODE_USE_POWERSHELL_TOOL", "CLAUDE_PROJECT_DIR")
+    for _var in _STRIP_FOR_CHILD:
+        os.environ.pop(_var, None)
+
     try:
         async for message in query(
             prompt=prompt,

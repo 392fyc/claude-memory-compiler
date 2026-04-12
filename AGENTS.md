@@ -309,7 +309,7 @@ AgentKB/
 |   |-- query.py                     #   Ask questions (index-guided, no RAG)
 |   |-- lint.py                      #   7 health checks
 |   |-- flush.py                     #   Extract memories from conversations (background)
-|   |-- scheduled-lint.sh            #   Windows Task Scheduler wrapper for daily structural lint
+|   |-- scheduled-lint.sh            #   Windows Task Scheduler wrapper for daily lint (local-only, not tracked)
 |   |-- skill_stats.py               #   Record Skill tool invocations to SQLite (called by session-end)
 |   |-- config.py                    #   Path constants
 |   |-- utils.py                     #   Shared helpers
@@ -352,7 +352,7 @@ Commands use simple relative paths from the project root. Empty `matcher` catche
 - Max context: 20,000 characters
 
 **`session-end.py`** (SessionEnd)
-- Reads hook input from stdin (JSON with `session_id`, `transcript_path`, `cwd`)
+- Reads hook input from stdin (JSON with `session_id`, `source`, `transcript_path`; `cwd` available via hook context)
 - Parses the JSONL transcript in-hook: extracts the last 30 turns as markdown (≤15,000 chars) and writes to a temp `.md` file
 - Calls `skill_stats.py` to record any Skill tool invocations for this session to `stats/skill-usage.db`
 - Spawns `flush.py` as a background process (`CREATE_NO_WINDOW` on Windows)
@@ -370,7 +370,7 @@ Commands use simple relative paths from the project root. Empty `matcher` catche
 
 Spawned by both hooks as a background process:
 - **Windows:** `CREATE_NO_WINDOW` flag (avoids console flash; `DETACHED_PROCESS` is explicitly avoided — it breaks Agent SDK subprocess I/O)
-- **Mac/Linux:** default flags
+- **Mac/Linux:** no special flags needed (child processes are reparented to init on parent exit)
 
 This ensures flush.py survives after Claude Code's hook process exits.
 

@@ -19,6 +19,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Allow importing from scripts/ directory
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
 # Recursion guard: if we were spawned by flush.py (which calls Agent SDK,
 # which runs Claude Code, which would fire this hook again), exit immediately.
 if os.environ.get("CLAUDE_INVOKED_BY"):
@@ -134,6 +137,15 @@ def main() -> None:
     if turn_count < MIN_TURNS_TO_FLUSH:
         logging.info("SKIP: only %d turns (min %d)", turn_count, MIN_TURNS_TO_FLUSH)
         return
+
+    # Extract skill usage stats from transcript (fast, no API calls)
+    try:
+        from skill_stats import process_transcript
+        skill_count = process_transcript(transcript_path, session_id, hook_input.get("cwd"))
+        if skill_count > 0:
+            logging.info("Recorded %d skill invocation(s) for session %s", skill_count, session_id)
+    except Exception as e:
+        logging.warning("Skill stats extraction failed (non-fatal): %s", e)
 
     # Write context to a temp file for the background process
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")

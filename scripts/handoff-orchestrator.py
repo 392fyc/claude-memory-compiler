@@ -24,6 +24,13 @@ ROOT = Path(__file__).resolve().parent.parent
 LOG_FILE = ROOT / "scripts" / "flush.log"
 DB_PATH = ROOT / "stats" / "skill-usage.db"
 
+# Windows console defaults to GBK/CP936 which can't handle emoji from Claude.
+# Reconfigure stdout/stderr to UTF-8 with replacement for unencodable chars.
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
 logging.basicConfig(
     filename=str(LOG_FILE),
     level=logging.INFO,
@@ -145,6 +152,66 @@ async def start_continuation_session(
             logging.warning("Failed to link session chain: %s", e)
 
 
+def start_visible_session(handoff_doc: Path, cwd: str) -> None:
+    """Launch claude CLI in a new visible terminal window for interactive use.
+
+    Instead of Agent SDK headless mode, opens a user-visible terminal with
+    a short prompt pointing to the handoff document. The user can interact
+    with the session directly.
+    """
+    import subprocess as _sp
+
+    prompt = (
+        f"Read the handoff document at {handoff_doc.resolve()} "
+        "and continue from where the previous session left off. "
+        "Acknowledge the handoff and begin with the first pending task."
+    )
+
+    if sys.platform == "win32":
+        import shutil
+
+        doc_path = str(handoff_doc.resolve()).replace("/", "\\")
+        short_prompt = f"Read the handoff document at {doc_path} and continue. Acknowledge the handoff and begin."
+
+        # Prefer Windows Terminal (wt) for new-tab in current window.
+        # Falls back to 'start' which opens a separate window.
+        # Use argument arrays to avoid shell injection and special-char breakage.
+        if shutil.which("wt"):
+            # -w 0 targets the most recently used WT window (opens tab, not new window)
+            _sp.Popen([
+                "wt", "-w", "0", "new-tab",
+                "--title", "Claude Continuation",
+                "-d", cwd,
+                "--", "cmd", "/k", "claude", short_prompt,
+            ])
+        else:
+            # start is a cmd built-in; "" is the title (avoids title/command ambiguity)
+            _sp.Popen([
+                "cmd", "/c", "start", '""',
+                "/d", cwd, "cmd", "/k", "claude", short_prompt,
+            ])
+    else:
+        # On Unix, try common terminal emulators with argument arrays
+        launched = False
+        for term_cmd in [
+            ["gnome-terminal", "--", "claude", prompt],
+            ["xterm", "-e", "claude", prompt],
+            ["claude", prompt],
+        ]:
+            try:
+                _sp.Popen(term_cmd, cwd=cwd)
+                launched = True
+                break
+            except FileNotFoundError:
+                continue
+
+        if not launched:
+            logging.error("Failed to launch visible session: no terminal available (cwd=%s)", cwd)
+            return
+
+    logging.info("Launched visible claude session (cwd=%s)", cwd)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Start a continuation Claude Code session from a handoff document"
@@ -164,6 +231,11 @@ def main() -> None:
         default=str(Path.cwd()),
         help="Working directory for the new session",
     )
+    parser.add_argument(
+        "--visible",
+        action="store_true",
+        help="Launch in a new visible terminal (interactive) instead of headless SDK mode",
+    )
     args = parser.parse_args()
 
     handoff_doc = Path(args.handoff_doc)
@@ -172,19 +244,23 @@ def main() -> None:
         sys.exit(1)
 
     logging.info(
-        "Handoff orchestrator started: doc=%s prev=%s cwd=%s",
+        "Handoff orchestrator started: doc=%s prev=%s cwd=%s visible=%s",
         handoff_doc,
         args.prev_session,
         args.cwd,
+        args.visible,
     )
 
-    asyncio.run(
-        start_continuation_session(
-            handoff_doc=handoff_doc,
-            cwd=args.cwd,
-            prev_session_id=args.prev_session,
+    if args.visible:
+        start_visible_session(handoff_doc, args.cwd)
+    else:
+        asyncio.run(
+            start_continuation_session(
+                handoff_doc=handoff_doc,
+                cwd=args.cwd,
+                prev_session_id=args.prev_session,
+            )
         )
-    )
 
 
 if __name__ == "__main__":

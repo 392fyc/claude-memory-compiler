@@ -75,11 +75,17 @@ if ($lanReachable) {
         Write-Error "Windows OpenSSH not found at $winSsh — cannot sync off-LAN"
         exit 1
     }
+    if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
+        Write-Warning "cloudflared not found in PATH — CF Tunnel ProxyCommand for ssh.fyc-space.uk will fail"
+    }
     # Windows ssh.exe reads ~/.ssh/config natively, which holds the
     # ProxyCommand for ssh.fyc-space.uk (Cloudflare Tunnel via cloudflared).
-    $sshKeyWin    = "$env:USERPROFILE\.ssh\id_ed25519"
+    # Forward slashes prevent rsync from treating backslashes as escape sequences
+    # when it tokenizes the -e string. Paths are quoted for space-safety.
+    $winSshFwd    = $winSsh -replace '\\', '/'
+    $sshKeyWin    = (($env:USERPROFILE + '\.ssh\id_ed25519') -replace '\\', '/')
     $remote       = '392fyc@ssh.fyc-space.uk:/share/CACHEDEV1_DATA/AgentKB/'
-    $sshTransport = "$winSsh -i $sshKeyWin -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new"
+    $sshTransport = "`"$winSshFwd`" -i `"$sshKeyWin`" -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new"
 }
 
 & $rsyncExe -az --delete --omit-dir-times --no-perms --no-owner --no-group `

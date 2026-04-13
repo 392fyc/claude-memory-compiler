@@ -36,8 +36,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             session_id TEXT,
             timestamp TEXT NOT NULL,
             project TEXT,
-            invocation_seq INTEGER NOT NULL DEFAULT 0,
-            UNIQUE (session_id, invocation_seq)
+            invocation_seq INTEGER NOT NULL DEFAULT 0
         )
     """)
     conn.execute("""

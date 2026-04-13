@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sqlite3
 import sys
@@ -45,14 +44,20 @@ def update_session_chain(prev_session_id: str, next_session_id: str) -> None:
         return
     try:
         with sqlite3.connect(str(DB_PATH)) as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE session_chain SET next_session_id=? WHERE session_id=?",
                 (next_session_id, prev_session_id),
             )
             conn.commit()
-        logging.info(
-            "session_chain linked: %s -> %s", prev_session_id, next_session_id
-        )
+        if cursor.rowcount == 0:
+            logging.warning(
+                "session_chain link: prev_session_id=%s not found (0 rows updated)",
+                prev_session_id,
+            )
+        else:
+            logging.info(
+                "session_chain linked: %s -> %s", prev_session_id, next_session_id
+            )
     except Exception as e:
         logging.warning("Failed to update session_chain: %s", e)
 
@@ -67,7 +72,6 @@ async def start_continuation_session(
         AssistantMessage,
         ClaudeAgentOptions,
         ResultMessage,
-        SystemMessage,
         TextBlock,
         query,
     )
@@ -153,8 +157,8 @@ def main() -> None:
     args = parser.parse_args()
 
     handoff_doc = Path(args.handoff_doc)
-    if not handoff_doc.exists():
-        logging.error("Handoff document not found: %s", handoff_doc)
+    if not handoff_doc.is_file():
+        logging.error("Handoff document not found or not a file: %s", handoff_doc)
         sys.exit(1)
 
     logging.info(

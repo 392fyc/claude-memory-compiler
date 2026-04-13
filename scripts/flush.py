@@ -332,7 +332,7 @@ def main():
 
     # Phase 4-1: PreCompact checkpoint — write summary to auto-memory so
     # the next session (or post-compaction context) has a structured snapshot.
-    if is_precompact and saved_project_dir and "FLUSH_ERROR" not in response:
+    if is_precompact and saved_project_dir and "FLUSH_ERROR" not in response and response.strip() not in ("", "FLUSH_OK"):
         try:
             write_auto_memory_checkpoint(saved_project_dir, session_id, response)
         except Exception as e:

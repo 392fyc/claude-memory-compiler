@@ -107,8 +107,8 @@ def record_session_chain(session_id: str, cwd: str) -> None:
             capture_output=True, text=True, cwd=cwd or None, timeout=5,
         )
         branch = result.stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to get git branch: %s", e)
 
     issue_ids: list[str] = []
     try:
@@ -117,8 +117,8 @@ def record_session_chain(session_id: str, cwd: str) -> None:
             capture_output=True, text=True, cwd=cwd or None, timeout=5,
         )
         issue_ids = list(dict.fromkeys(re.findall(r"#(\d+)", log_result.stdout)))[:5]
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to get git log issue IDs: %s", e)
 
     import json as _json
     import sqlite3
@@ -128,26 +128,18 @@ def record_session_chain(session_id: str, cwd: str) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(str(db_path)) as conn:
-        # Ensure table exists (idempotent)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS session_chain (
-                session_id      TEXT PRIMARY KEY,
-                issue_ids       TEXT DEFAULT '[]',
-                branch          TEXT DEFAULT '',
-                worktree_path   TEXT,
-                start_time      TEXT NOT NULL,
-                end_time        TEXT,
-                handoff_doc     TEXT,
-                next_session_id TEXT,
-                status          TEXT DEFAULT 'active'
-                    CHECK(status IN ('active','handoff','complete'))
-            )
-        """)
+        # session_chain table is created by skill_stats.init_db();
+        # process_transcript() is always called before this function.
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         conn.execute(
-            """INSERT OR REPLACE INTO session_chain
+            """INSERT INTO session_chain
                (session_id, issue_ids, branch, start_time, end_time, status)
-               VALUES (?, ?, ?, ?, ?, 'complete')""",
+               VALUES (?, ?, ?, ?, ?, 'complete')
+               ON CONFLICT(session_id) DO UPDATE SET
+                   issue_ids=excluded.issue_ids,
+                   branch=excluded.branch,
+                   end_time=excluded.end_time,
+                   status=excluded.status""",
             (session_id, _json.dumps(issue_ids), branch, now_iso, now_iso),
         )
         conn.commit()

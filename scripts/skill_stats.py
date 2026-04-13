@@ -33,7 +33,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             skill TEXT NOT NULL,
             args TEXT,
-            session_id TEXT,
+            session_id TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             project TEXT,
             invocation_seq INTEGER NOT NULL DEFAULT 0

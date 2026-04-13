@@ -94,6 +94,65 @@ def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
     return context, len(recent)
 
 
+def record_session_chain(session_id: str, cwd: str) -> None:
+    """Record a session_chain entry in the skill-usage DB (Phase 4-1).
+
+    Captures branch name and recently-referenced issue IDs from git log.
+    Non-blocking: all failures are logged but do not propagate.
+    """
+    branch = ""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=cwd or None, timeout=5,
+        )
+        branch = result.stdout.strip()
+    except Exception as e:
+        logging.warning("Failed to get git branch: %s", e)
+
+    issue_ids: list[str] = []
+    try:
+        log_result = subprocess.run(
+            ["git", "log", "--oneline", "-20"],
+            capture_output=True, text=True, cwd=cwd or None, timeout=5,
+        )
+        issue_ids = list(dict.fromkeys(re.findall(r"#(\d+)", log_result.stdout)))[:5]
+    except Exception as e:
+        logging.warning("Failed to get git log issue IDs: %s", e)
+
+    import json as _json
+    import sqlite3
+
+    db_path = ROOT / "stats" / "skill-usage.db"
+    if not db_path.parent.exists():
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Reuse init_db from skill_stats to avoid schema drift (single source of truth).
+    from skill_stats import init_db as _init_db
+    conn = _init_db(db_path)
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        conn.execute(
+            """INSERT INTO session_chain
+               (session_id, issue_ids, branch, start_time, end_time, status)
+               VALUES (?, ?, ?, ?, ?, 'complete')
+               ON CONFLICT(session_id) DO UPDATE SET
+                   issue_ids=excluded.issue_ids,
+                   branch=excluded.branch,
+                   end_time=excluded.end_time,
+                   status=excluded.status""",
+            (session_id, _json.dumps(issue_ids), branch, now_iso, now_iso),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    logging.info(
+        "session_chain recorded: session=%s branch=%s issues=%s",
+        session_id, branch, issue_ids,
+    )
+
+
 def main() -> None:
     # Read hook input from stdin
     # Claude Code on Windows may pass paths with unescaped backslashes
@@ -146,6 +205,12 @@ def main() -> None:
             logging.info("Recorded %d skill invocation(s) for session %s", skill_count, session_id)
     except Exception as e:
         logging.warning("Skill stats extraction failed (non-fatal): %s", e)
+
+    # Phase 4-1: record session chain entry (non-blocking)
+    try:
+        record_session_chain(session_id, hook_input.get("cwd", ""))
+    except Exception as e:
+        logging.warning("session_chain recording failed (non-fatal): %s", e)
 
     # Write context to a temp file for the background process
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")

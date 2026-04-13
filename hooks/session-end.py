@@ -128,8 +128,21 @@ def record_session_chain(session_id: str, cwd: str) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(str(db_path)) as conn:
-        # session_chain table is created by skill_stats.init_db();
-        # process_transcript() is always called before this function.
+        # Ensure session_chain table exists even if process_transcript() failed earlier.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_chain (
+                session_id      TEXT PRIMARY KEY,
+                issue_ids       TEXT DEFAULT '[]',
+                branch          TEXT DEFAULT '',
+                worktree_path   TEXT,
+                start_time      TEXT NOT NULL,
+                end_time        TEXT,
+                handoff_doc     TEXT,
+                next_session_id TEXT,
+                status          TEXT DEFAULT 'active'
+                    CHECK(status IN ('active','handoff','complete'))
+            )
+        """)
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         conn.execute(
             """INSERT INTO session_chain

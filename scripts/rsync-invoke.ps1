@@ -66,8 +66,10 @@ try {
 
 if ($lanReachable) {
     Write-Host "rsync-invoke: LAN reachable — direct connection to 192.168.0.254"
+    # Forward slashes + quotes for consistency with off-LAN branch.
+    $cwSshFwd     = $cwSshExe -replace '\\', '/'
     $remote       = '392fyc@192.168.0.254:/share/CACHEDEV1_DATA/AgentKB/'
-    $sshTransport = "$cwSshExe -i $sshKey -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+    $sshTransport = "`"$cwSshFwd`" -i `"$sshKey`" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
 } else {
     Write-Host "rsync-invoke: LAN not reachable — off-LAN via ssh.fyc-space.uk (CF Tunnel)"
     $winSsh = "$env:SystemRoot\System32\OpenSSH\ssh.exe"

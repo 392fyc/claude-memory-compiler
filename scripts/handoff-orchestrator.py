@@ -175,31 +175,39 @@ def start_visible_session(handoff_doc: Path, cwd: str) -> None:
 
         # Prefer Windows Terminal (wt) for new-tab in current window.
         # Falls back to 'start' which opens a separate window.
+        # Use argument arrays to avoid shell injection and special-char breakage.
         if shutil.which("wt"):
             # -w 0 targets the most recently used WT window (opens tab, not new window)
-            _sp.Popen(
-                f'wt -w 0 new-tab --title "Claude Continuation" -d "{cwd}" cmd /k claude "{short_prompt}"',
-                shell=True,
-            )
+            _sp.Popen([
+                "wt", "-w", "0", "new-tab",
+                "--title", "Claude Continuation",
+                "-d", cwd,
+                "--", "cmd", "/k", "claude", short_prompt,
+            ])
         else:
-            _sp.Popen(
-                f'start "Claude Continuation" /d "{cwd}" cmd /k claude "{short_prompt}"',
-                shell=True,
-            )
+            # start is a cmd built-in; "" is the title (avoids title/command ambiguity)
+            _sp.Popen([
+                "cmd", "/c", "start", '""',
+                "/d", cwd, "cmd", "/k", "claude", short_prompt,
+            ])
     else:
-        # On Unix, try common terminal emulators
+        # On Unix, try common terminal emulators with argument arrays
+        launched = False
         for term_cmd in [
-            ["gnome-terminal", "--", "bash", "-c"],
-            ["xterm", "-e"],
-            ["bash", "-c"],
+            ["gnome-terminal", "--", "claude", prompt],
+            ["xterm", "-e", "claude", prompt],
+            ["claude", prompt],
         ]:
             try:
-                _sp.Popen(
-                    [*term_cmd, f'cd "{cwd}" && claude "{prompt}"'],
-                )
+                _sp.Popen(term_cmd, cwd=cwd)
+                launched = True
                 break
             except FileNotFoundError:
                 continue
+
+        if not launched:
+            logging.error("Failed to launch visible session: no terminal available (cwd=%s)", cwd)
+            return
 
     logging.info("Launched visible claude session (cwd=%s)", cwd)
 

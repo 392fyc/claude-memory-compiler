@@ -37,10 +37,6 @@ if (-not (Test-Path "$cwrsyncBin\rsync.exe")) {
 }
 $rsyncExe = "$cwrsyncBin\rsync.exe"
 $cwSshExe = "$cwrsyncBin\ssh.exe"
-if (-not (Test-Path $cwSshExe)) {
-    Write-Error "cwRsync ssh.exe not found at $cwSshExe — check cwRsync installation"
-    exit 1
-}
 
 # Convert Windows path to Cygwin /cygdrive/ format
 # e.g. C:\Users\foo -> /cygdrive/c/Users/foo
@@ -70,6 +66,10 @@ try {
 
 if ($lanReachable) {
     Write-Host "rsync-invoke: LAN reachable — direct connection to 192.168.0.254"
+    if (-not (Test-Path $cwSshExe)) {
+        Write-Error "cwRsync ssh.exe not found at $cwSshExe — check cwRsync installation"
+        exit 1
+    }
     # Forward slashes + quotes for consistency with off-LAN branch.
     $cwSshFwd     = $cwSshExe -replace '\\', '/'
     $remote       = '392fyc@192.168.0.254:/share/CACHEDEV1_DATA/AgentKB/'
@@ -79,10 +79,6 @@ if ($lanReachable) {
     $winSsh = "$env:SystemRoot\System32\OpenSSH\ssh.exe"
     if (-not (Test-Path $winSsh)) {
         Write-Error "Windows OpenSSH not found at $winSsh — cannot sync off-LAN"
-        exit 1
-    }
-    if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
-        Write-Error "cloudflared not found in PATH — CF Tunnel ProxyCommand for ssh.fyc-space.uk requires cloudflared"
         exit 1
     }
     # Windows ssh.exe reads ~/.ssh/config natively, which holds the

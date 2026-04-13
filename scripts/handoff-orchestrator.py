@@ -176,8 +176,9 @@ def start_visible_session(handoff_doc: Path, cwd: str) -> None:
         # Prefer Windows Terminal (wt) for new-tab in current window.
         # Falls back to 'start' which opens a separate window.
         if shutil.which("wt"):
+            # -w 0 targets the most recently used WT window (opens tab, not new window)
             _sp.Popen(
-                f'wt new-tab --title "Claude Continuation" -d "{cwd}" cmd /k claude "{short_prompt}"',
+                f'wt -w 0 new-tab --title "Claude Continuation" -d "{cwd}" cmd /k claude "{short_prompt}"',
                 shell=True,
             )
         else:

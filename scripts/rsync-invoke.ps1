@@ -78,8 +78,12 @@ if ($lanReachable) {
     Write-Host "rsync-invoke: LAN not reachable — off-LAN via ssh.fyc-space.uk (CF Tunnel)"
     $winSsh = "$env:SystemRoot\System32\OpenSSH\ssh.exe"
     if (-not (Test-Path $winSsh)) {
-        Write-Error "Windows OpenSSH not found at $winSsh — cannot sync off-LAN"
-        exit 1
+        $sshFound = Get-Command ssh.exe -ErrorAction SilentlyContinue
+        if ($sshFound) { $winSsh = $sshFound.Source }
+        else {
+            Write-Error "Windows OpenSSH not found (tried $winSsh and PATH) — cannot sync off-LAN"
+            exit 1
+        }
     }
     # Windows ssh.exe reads ~/.ssh/config natively, which holds the
     # ProxyCommand for ssh.fyc-space.uk (Cloudflare Tunnel via cloudflared).

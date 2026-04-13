@@ -480,7 +480,7 @@ Thin shell wrapper around `lint.py --structural-only` for Windows Task Scheduler
 
 Records Skill tool invocations from a JSONL transcript to SQLite. Called automatically by `session-end.py` at the end of every session.
 - Database: `stats/skill-usage.db` (auto-created; gitignored)
-- Schema: `skill_usage(skill, args, session_id, timestamp, project)`
+- Schema: `skill_usage(skill, args, session_id, timestamp, project, invocation_seq)` — `UNIQUE(session_id, invocation_seq)` prevents duplicate rows on re-processing
 - Indexes on `skill` and `timestamp` for fast aggregation queries
 - CLI: `uv run python scripts/skill_stats.py <transcript_path> <session_id> [project_dir]`
 

@@ -46,6 +46,10 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_skill_usage_timestamp ON skill_usage(timestamp)
     """)
+    # Migrate existing tables that predate the invocation_seq column.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(skill_usage)")}
+    if "invocation_seq" not in existing_cols:
+        conn.execute("ALTER TABLE skill_usage ADD COLUMN invocation_seq INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     return conn
 

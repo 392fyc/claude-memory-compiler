@@ -33,7 +33,7 @@ if sys.platform == "win32":
     _original_open_process = _anyio.open_process
 
     async def _open_process_no_window(*args, **kwargs):
-        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
         return await _original_open_process(*args, **kwargs)
 
     _anyio.open_process = _open_process_no_window

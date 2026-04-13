@@ -87,13 +87,26 @@ async def start_continuation_session(
     logging.info("Starting continuation session (cwd=%s)", cwd)
 
     new_session_id: str | None = None
+    known_session_ids: set[str] = set()
+
+    # Snapshot existing sessions BEFORE launching so we can diff afterwards
+    if prev_session_id:
+        try:
+            from claude_agent_sdk import list_sessions
+
+            for s in list_sessions(directory=cwd, limit=20) or []:
+                sid = getattr(s, "session_id", None) or getattr(s, "tag", None)
+                if sid:
+                    known_session_ids.add(sid)
+        except Exception:
+            pass
 
     try:
         async for message in query(
             prompt=prompt,
             options=ClaudeAgentOptions(
                 cwd=cwd,
-                permission_mode="bypassPermissions",
+                permission_mode="default",
                 max_turns=None,
             ),
         ):
@@ -111,19 +124,16 @@ async def start_continuation_session(
         logging.error("Continuation session error: %s", e)
         raise
 
-    # Try to find the new session ID from recent sessions
+    # Find the new session ID by diffing against pre-launch snapshot
     if prev_session_id:
         try:
             from claude_agent_sdk import list_sessions
 
-            sessions = list_sessions(directory=cwd, limit=3)
-            if sessions:
-                # The most recent session that isn't the previous one
-                for s in sessions:
-                    sid = getattr(s, "session_id", None) or getattr(s, "tag", None)
-                    if sid and sid != prev_session_id:
-                        new_session_id = sid
-                        break
+            for s in list_sessions(directory=cwd, limit=20) or []:
+                sid = getattr(s, "session_id", None) or getattr(s, "tag", None)
+                if sid and sid not in known_session_ids:
+                    new_session_id = sid
+                    break
 
             if new_session_id:
                 update_session_chain(prev_session_id, new_session_id)

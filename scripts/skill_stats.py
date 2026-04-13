@@ -50,6 +50,18 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(skill_usage)")}
     if "invocation_seq" not in existing_cols:
         conn.execute("ALTER TABLE skill_usage ADD COLUMN invocation_seq INTEGER NOT NULL DEFAULT 0")
+        # Backfill sequential values per session so the unique index can be applied.
+        conn.execute("""
+            UPDATE skill_usage
+            SET invocation_seq = (
+                SELECT COUNT(*) FROM skill_usage prev
+                WHERE prev.session_id = skill_usage.session_id AND prev.id < skill_usage.id
+            )
+        """)
+    # Applies to both new tables and migrated tables (backfilled above).
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_usage_dedup ON skill_usage(session_id, invocation_seq)"
+    )
     conn.commit()
     return conn
 

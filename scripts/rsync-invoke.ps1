@@ -61,6 +61,7 @@ try {
              -ErrorAction SilentlyContinue
     $lanReachable = [bool]$probe
 } catch {
+    Write-Host "rsync-invoke: LAN probe exception (treating as unreachable): $_"
     $lanReachable = $false
 }
 
@@ -79,7 +80,7 @@ if ($lanReachable) {
     $winSsh = "$env:SystemRoot\System32\OpenSSH\ssh.exe"
     if (-not (Test-Path $winSsh)) {
         $sshFound = Get-Command ssh.exe -ErrorAction SilentlyContinue
-        if ($sshFound) { $winSsh = $sshFound.Source }
+        if ($sshFound) { $winSsh = $sshFound.Path }
         else {
             Write-Error "Windows OpenSSH not found (tried $winSsh and PATH) — cannot sync off-LAN"
             exit 1

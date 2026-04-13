@@ -2,7 +2,7 @@
 Extract Skill tool invocations from a Claude Code transcript JSONL and record to SQLite.
 
 Usage:
-    python skill-stats.py <transcript_path> <session_id> [project_dir]
+    python skill_stats.py <transcript_path> <session_id> [project_dir]
 
 The transcript is a JSONL file where each line is a JSON object. Tool invocations
 appear as content blocks with type "tool_use" and name "Skill". The skill name is
@@ -33,9 +33,10 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             skill TEXT NOT NULL,
             args TEXT,
-            session_id TEXT,
+            session_id TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            project TEXT
+            project TEXT,
+            invocation_seq INTEGER NOT NULL DEFAULT 0
         )
     """)
     conn.execute("""
@@ -44,6 +45,22 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_skill_usage_timestamp ON skill_usage(timestamp)
     """)
+    # Migrate existing tables that predate the invocation_seq column.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(skill_usage)")}
+    if "invocation_seq" not in existing_cols:
+        conn.execute("ALTER TABLE skill_usage ADD COLUMN invocation_seq INTEGER NOT NULL DEFAULT 0")
+        # Backfill sequential values per session so the unique index can be applied.
+        conn.execute("""
+            UPDATE skill_usage
+            SET invocation_seq = (
+                SELECT COUNT(*) FROM skill_usage prev
+                WHERE prev.session_id = skill_usage.session_id AND prev.id < skill_usage.id
+            )
+        """)
+    # Applies to both new tables and migrated tables (backfilled above).
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_usage_dedup ON skill_usage(session_id, invocation_seq)"
+    )
     conn.commit()
     return conn
 
@@ -110,21 +127,23 @@ def record_invocations(
     now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
     rows = []
-    for inv in invocations:
+    for seq, inv in enumerate(invocations):
         rows.append((
             inv["skill"],
             inv.get("args"),
             session_id,
             inv.get("timestamp") or now,
             project,
+            seq,
         ))
 
+    before = conn.total_changes
     conn.executemany(
-        "INSERT INTO skill_usage (skill, args, session_id, timestamp, project) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO skill_usage (skill, args, session_id, timestamp, project, invocation_seq) VALUES (?, ?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()
-    return len(rows)
+    return conn.total_changes - before
 
 
 def process_transcript(transcript_path: Path, session_id: str, project: str | None = None) -> int:

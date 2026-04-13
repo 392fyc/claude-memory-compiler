@@ -63,6 +63,6 @@ Decision records
 
 ## NAS Sync
 
-Local working copy: D:/Mercury/AgentKB
-NAS backup: /share/CACHEDEV1_DATA/AgentKB (file sync, no git on NAS)
-Future: NAS Docker container with git + compile service
+Local working copy: `$AGENTKB_DIR` (e.g. `D:/Mercury/AgentKB`)
+NAS backup: `/share/CACHEDEV1_DATA/AgentKB` (file sync via `scripts/rsync-to-nas.ps1`, no git on NAS)
+Sync frequency: hourly via Windows Task Scheduler

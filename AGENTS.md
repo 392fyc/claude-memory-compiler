@@ -289,7 +289,7 @@ Output: a markdown report with severity levels (error, warning, suggestion).
 ## Full Project Structure
 
 ```
-llm-personal-kb/
+AgentKB/
 |-- .claude/
 |   |-- settings.json                # Hook configuration (auto-activates in Claude Code)
 |-- .gitignore                       # Excludes runtime state, temp files, caches
@@ -303,11 +303,14 @@ llm-personal-kb/
 |   |-- concepts/                    #   Atomic knowledge articles
 |   |-- connections/                 #   Cross-cutting insights linking 2+ concepts
 |   |-- qa/                          #   Filed query answers (compounding knowledge)
+|-- schema/                          # Compilation rules and wiki conventions
 |-- scripts/                         # CLI tools
 |   |-- compile.py                   #   Compile daily logs -> knowledge articles
 |   |-- query.py                     #   Ask questions (index-guided, no RAG)
 |   |-- lint.py                      #   7 health checks
 |   |-- flush.py                     #   Extract memories from conversations (background)
+|   |-- scheduled-lint.sh            #   Windows Task Scheduler wrapper for daily lint (local-only, not tracked)
+|   |-- skill_stats.py               #   Record Skill tool invocations to SQLite (called by session-end)
 |   |-- config.py                    #   Path constants
 |   |-- utils.py                     #   Shared helpers
 |-- hooks/                           # Claude Code hooks
@@ -315,6 +318,8 @@ llm-personal-kb/
 |   |-- session-end.py               #   Extracts conversation -> daily log
 |   |-- pre-compact.py               #   Safety net: captures context before compaction
 |-- reports/                         # Lint reports (gitignored)
+|-- stats/                           # Usage analytics (gitignored)
+|   |-- skill-usage.db               #   SQLite DB of Skill tool invocations per session
 ```
 
 ---
@@ -347,9 +352,10 @@ Commands use simple relative paths from the project root. Empty `matcher` catche
 - Max context: 20,000 characters
 
 **`session-end.py`** (SessionEnd)
-- Reads hook input from stdin (JSON with `session_id`, `transcript_path`, `cwd`)
-- Copies the raw JSONL transcript to a temp file (no parsing in the hook - keeps it fast)
-- Spawns `flush.py` as a fully detached background process
+- Reads hook input from stdin (JSON with `session_id`, `source`, `transcript_path`; `cwd` available via hook context)
+- Parses the JSONL transcript in-hook: extracts the last 30 turns as markdown (≤15,000 chars) and writes to a temp `.md` file
+- Calls `skill_stats.py` to record any Skill tool invocations for this session to `stats/skill-usage.db`
+- Spawns `flush.py` as a background process (`CREATE_NO_WINDOW` on Windows)
 - Recursion guard: exits immediately if `CLAUDE_INVOKED_BY` env var is set
 
 **`pre-compact.py`** (PreCompact)
@@ -362,9 +368,9 @@ Commands use simple relative paths from the project root. Empty `matcher` catche
 
 ### Background Flush Process (`flush.py`)
 
-Spawned by both hooks as a fully detached background process:
-- **Windows:** `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` flags
-- **Mac/Linux:** `start_new_session=True`
+Spawned by both hooks as a background process:
+- **Windows:** `CREATE_NO_WINDOW` flag (avoids console flash; `DETACHED_PROCESS` is explicitly avoided — it breaks Agent SDK subprocess I/O)
+- **Mac/Linux:** no special flags needed (child processes are reparented to init on parent exit)
 
 This ensures flush.py survives after Claude Code's hook process exits.
 
@@ -461,6 +467,22 @@ uv run python scripts/lint.py --structural-only  # skip LLM check (free)
 ```
 
 Reports saved to `reports/lint-YYYY-MM-DD.md`.
+
+### scheduled-lint.sh - Daily Structural Lint Wrapper
+
+Thin shell wrapper around `lint.py --structural-only` for Windows Task Scheduler:
+- Appends timestamped `INFO`/`WARN` lines to `scripts/lint-schedule.log`
+- Emits a `WARN` line if errors are found (visible to the next session)
+- Manual run: `bash scripts/scheduled-lint.sh`
+- Uses `$AGENTKB_DIR` env var (defaults to the repo root relative to the script)
+
+### skill_stats.py - Skill Usage Analytics
+
+Records Skill tool invocations from a JSONL transcript to SQLite. Called automatically by `session-end.py` at the end of every session.
+- Database: `stats/skill-usage.db` (auto-created; gitignored)
+- Schema: `skill_usage(skill, args, session_id, timestamp, project, invocation_seq)` — `UNIQUE(session_id, invocation_seq)` prevents duplicate rows on re-processing
+- Indexes on `skill` and `timestamp` for fast aggregation queries
+- CLI: `uv run python scripts/skill_stats.py <transcript_path> <session_id> [project_dir]`
 
 ---
 

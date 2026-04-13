@@ -48,9 +48,14 @@ function ConvertTo-CygwinPath([string]$p) {
     return $p
 }
 
-$src     = (ConvertTo-CygwinPath $agentKBDir) + '/'
-$excFile = ConvertTo-CygwinPath ($agentKBDir + '\scripts\rsync-exclude.list')
-$sshKey  = ConvertTo-CygwinPath ($env:USERPROFILE + '\.ssh\id_ed25519')
+$src          = (ConvertTo-CygwinPath $agentKBDir) + '/'
+$excFile      = ConvertTo-CygwinPath ($agentKBDir + '\scripts\rsync-exclude.list')
+$sshKeyNative = $env:USERPROFILE + '\.ssh\id_ed25519'
+if (-not (Test-Path $sshKeyNative)) {
+    Write-Error "SSH key not found at $sshKeyNative — cannot sync"
+    exit 1
+}
+$sshKey       = ConvertTo-CygwinPath $sshKeyNative
 
 # ── LAN probe ─────────────────────────────────────────────────────────────────
 # Test-NetConnection suppresses its own warning output to keep logs clean.
@@ -80,7 +85,10 @@ if ($lanReachable) {
     $winSsh = "$env:SystemRoot\System32\OpenSSH\ssh.exe"
     if (-not (Test-Path $winSsh)) {
         $sshFound = Get-Command ssh.exe -ErrorAction SilentlyContinue
-        if ($sshFound) { $winSsh = $sshFound.Path }
+        if ($sshFound) {
+            $winSsh = $sshFound.Path
+            Write-Host "rsync-invoke: system OpenSSH not at default path; using PATH fallback: $winSsh"
+        }
         else {
             Write-Error "Windows OpenSSH not found (tried $winSsh and PATH) — cannot sync off-LAN"
             exit 1

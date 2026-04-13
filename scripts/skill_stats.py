@@ -36,7 +36,8 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             session_id TEXT,
             timestamp TEXT NOT NULL,
             project TEXT,
-            UNIQUE (session_id, skill, timestamp)
+            invocation_seq INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (session_id, invocation_seq)
         )
     """)
     conn.execute("""
@@ -111,21 +112,23 @@ def record_invocations(
     now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
     rows = []
-    for inv in invocations:
+    for seq, inv in enumerate(invocations):
         rows.append((
             inv["skill"],
             inv.get("args"),
             session_id,
             inv.get("timestamp") or now,
             project,
+            seq,
         ))
 
+    before = conn.total_changes
     conn.executemany(
-        "INSERT OR IGNORE INTO skill_usage (skill, args, session_id, timestamp, project) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO skill_usage (skill, args, session_id, timestamp, project, invocation_seq) VALUES (?, ?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()
-    return len(rows)
+    return conn.total_changes - before
 
 
 def process_transcript(transcript_path: Path, session_id: str, project: str | None = None) -> int:

@@ -5,6 +5,12 @@
 #   dup() syscall fails due to Cygwin/MSYS2 file-descriptor incompatibility.
 #   Calling cwRsync from PowerShell (native Windows handles) avoids this.
 #
+# OFF-LAN FALLBACK:
+#   If 192.168.0.254:22 is unreachable (LAN not available), falls back to
+#   Windows system ssh.exe with ssh.fyc-space.uk (Cloudflare Tunnel).
+#   Requires cloudflared in PATH and ~/.ssh/config ProxyCommand entry for
+#   ssh.fyc-space.uk.
+#
 # HOW IT'S CALLED:
 #   MSYS_NO_PATHCONV=1 powershell.exe -NonInteractive -ExecutionPolicy Bypass \
 #     -File "$AGENTKB_DIR/scripts/rsync-invoke.ps1"
@@ -30,7 +36,7 @@ if (-not (Test-Path "$cwrsyncBin\rsync.exe")) {
     }
 }
 $rsyncExe = "$cwrsyncBin\rsync.exe"
-$sshExe   = "$cwrsyncBin\ssh.exe"
+$cwSshExe = "$cwrsyncBin\ssh.exe"
 
 # Convert Windows path to Cygwin /cygdrive/ format
 # e.g. C:\Users\foo -> /cygdrive/c/Users/foo
@@ -45,11 +51,40 @@ function ConvertTo-CygwinPath([string]$p) {
 $src     = (ConvertTo-CygwinPath $agentKBDir) + '/'
 $excFile = ConvertTo-CygwinPath ($agentKBDir + '\scripts\rsync-exclude.list')
 $sshKey  = ConvertTo-CygwinPath ($env:USERPROFILE + '\.ssh\id_ed25519')
-$remote  = '392fyc@192.168.0.254:/share/CACHEDEV1_DATA/AgentKB/'
+
+# ── LAN probe ─────────────────────────────────────────────────────────────────
+# Test-NetConnection suppresses its own warning output to keep logs clean.
+$lanReachable = $false
+try {
+    $probe = Test-NetConnection -ComputerName 192.168.0.254 -Port 22 `
+             -InformationLevel Quiet -WarningAction SilentlyContinue `
+             -ErrorAction SilentlyContinue
+    $lanReachable = [bool]$probe
+} catch {
+    $lanReachable = $false
+}
+
+if ($lanReachable) {
+    Write-Host "rsync-invoke: LAN reachable — direct connection to 192.168.0.254"
+    $remote       = '392fyc@192.168.0.254:/share/CACHEDEV1_DATA/AgentKB/'
+    $sshTransport = "$cwSshExe -i $sshKey -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+} else {
+    Write-Host "rsync-invoke: LAN not reachable — off-LAN via ssh.fyc-space.uk (CF Tunnel)"
+    $winSsh = "$env:SystemRoot\System32\OpenSSH\ssh.exe"
+    if (-not (Test-Path $winSsh)) {
+        Write-Error "Windows OpenSSH not found at $winSsh — cannot sync off-LAN"
+        exit 1
+    }
+    # Windows ssh.exe reads ~/.ssh/config natively, which holds the
+    # ProxyCommand for ssh.fyc-space.uk (Cloudflare Tunnel via cloudflared).
+    $sshKeyWin    = "$env:USERPROFILE\.ssh\id_ed25519"
+    $remote       = '392fyc@ssh.fyc-space.uk:/share/CACHEDEV1_DATA/AgentKB/'
+    $sshTransport = "$winSsh -i $sshKeyWin -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new"
+}
 
 & $rsyncExe -az --delete --omit-dir-times --no-perms --no-owner --no-group `
     "--exclude-from=$excFile" `
-    -e "$sshExe -i $sshKey -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new" `
+    -e $sshTransport `
     $src `
     $remote
 

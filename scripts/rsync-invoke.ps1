@@ -37,6 +37,10 @@ if (-not (Test-Path "$cwrsyncBin\rsync.exe")) {
 }
 $rsyncExe = "$cwrsyncBin\rsync.exe"
 $cwSshExe = "$cwrsyncBin\ssh.exe"
+if (-not (Test-Path $cwSshExe)) {
+    Write-Error "cwRsync ssh.exe not found at $cwSshExe — check cwRsync installation"
+    exit 1
+}
 
 # Convert Windows path to Cygwin /cygdrive/ format
 # e.g. C:\Users\foo -> /cygdrive/c/Users/foo
@@ -78,7 +82,8 @@ if ($lanReachable) {
         exit 1
     }
     if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
-        Write-Warning "cloudflared not found in PATH — CF Tunnel ProxyCommand for ssh.fyc-space.uk will fail"
+        Write-Error "cloudflared not found in PATH — CF Tunnel ProxyCommand for ssh.fyc-space.uk requires cloudflared"
+        exit 1
     }
     # Windows ssh.exe reads ~/.ssh/config natively, which holds the
     # ProxyCommand for ssh.fyc-space.uk (Cloudflare Tunnel via cloudflared).

@@ -2,7 +2,7 @@
 Extract Skill tool invocations from a Claude Code transcript JSONL and record to SQLite.
 
 Usage:
-    python skill-stats.py <transcript_path> <session_id> [project_dir]
+    python skill_stats.py <transcript_path> <session_id> [project_dir]
 
 The transcript is a JSONL file where each line is a JSON object. Tool invocations
 appear as content blocks with type "tool_use" and name "Skill". The skill name is
@@ -35,7 +35,8 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             args TEXT,
             session_id TEXT,
             timestamp TEXT NOT NULL,
-            project TEXT
+            project TEXT,
+            UNIQUE (session_id, skill, timestamp)
         )
     """)
     conn.execute("""
@@ -120,7 +121,7 @@ def record_invocations(
         ))
 
     conn.executemany(
-        "INSERT INTO skill_usage (skill, args, session_id, timestamp, project) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO skill_usage (skill, args, session_id, timestamp, project) VALUES (?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()

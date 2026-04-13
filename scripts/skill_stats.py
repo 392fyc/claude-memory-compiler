@@ -44,6 +44,21 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_skill_usage_timestamp ON skill_usage(timestamp)
     """)
+    # Phase 4-1: session chain tracking for cross-session continuity
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS session_chain (
+            session_id      TEXT PRIMARY KEY,
+            issue_ids       TEXT DEFAULT '[]',
+            branch          TEXT DEFAULT '',
+            worktree_path   TEXT,
+            start_time      TEXT NOT NULL,
+            end_time        TEXT,
+            handoff_doc     TEXT,
+            next_session_id TEXT,
+            status          TEXT DEFAULT 'active'
+                CHECK(status IN ('active','handoff','complete'))
+        )
+    """)
     conn.commit()
     return conn
 

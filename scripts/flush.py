@@ -80,14 +80,14 @@ def _find_claude_exe() -> Path | None:
     execpath = os.environ.get("CLAUDE_CODE_EXECPATH")
     if execpath:
         p = Path(execpath)
-        if p.exists():
+        if p.is_file():
             return p
 
     # 2. Well-known install locations
     home = Path.home()
     for name in ("claude.exe", "claude"):
         candidate = home / ".local" / "bin" / name
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
 
     # 3. PATH lookup
@@ -192,7 +192,15 @@ respond with exactly: FLUSH_OK
                 logging.error("[claude stderr] %s", line)
         return f"FLUSH_ERROR: claude -p exit code {result.returncode}: {stderr_text[:500]}"
 
-    return result.stdout.strip()
+    output = result.stdout.strip()
+    if not output:
+        stderr_text = (result.stderr or "").strip()
+        logging.error("claude -p returned empty stdout (rc=0)")
+        if stderr_text:
+            logging.error("[claude stderr] %s", stderr_text[:500])
+        return "FLUSH_ERROR: claude -p returned empty output"
+
+    return output
 
 
 COMPILE_AFTER_HOUR = 18  # 6 PM local time

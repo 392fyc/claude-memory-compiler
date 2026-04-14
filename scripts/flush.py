@@ -2,8 +2,9 @@
 Memory flush agent - extracts important knowledge from conversation context.
 
 Spawned by session-end.py or pre-compact.py as a background process. Reads
-pre-extracted conversation context from a .md file, uses the Claude Agent SDK
-to decide what's worth saving, and appends the result to today's daily log.
+pre-extracted conversation context from a .md file, uses the Claude CLI in
+print mode to decide what's worth saving, and appends the result to today's
+daily log.
 
 Usage:
     uv run python flush.py <context_file.md> <session_id>
@@ -15,28 +16,14 @@ from __future__ import annotations
 import os
 os.environ["CLAUDE_INVOKED_BY"] = "memory_flush"
 
-import asyncio
 import json
 import logging
+import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-
-# Windows console-window fix: the Agent SDK spawns claude.exe via
-# anyio.open_process() without CREATE_NO_WINDOW, causing a visible
-# terminal to pop up on every flush. Monkey-patch anyio.open_process
-# to inject the flag before the SDK imports anyio.
-if sys.platform == "win32":
-    import anyio as _anyio
-    _original_open_process = _anyio.open_process
-
-    async def _open_process_no_window(*args, **kwargs):
-        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
-        return await _original_open_process(*args, **kwargs)
-
-    _anyio.open_process = _open_process_no_window
 
 ROOT = Path(__file__).resolve().parent.parent
 DAILY_DIR = ROOT / "daily"
@@ -87,26 +74,39 @@ def append_to_daily_log(content: str, section: str = "Session") -> None:
         f.write(entry)
 
 
-def _log_cli_stderr(line: str) -> None:
-    """Callback: forward every bundled CLI stderr line into flush.log.
+def _find_claude_exe() -> Path | None:
+    """Locate the claude CLI executable."""
+    # 1. CLAUDE_CODE_EXECPATH (set by parent Claude Code session)
+    execpath = os.environ.get("CLAUDE_CODE_EXECPATH")
+    if execpath:
+        p = Path(execpath)
+        if p.exists():
+            return p
 
-    Without this, SDK ProcessError only surfaces the hardcoded string
-    "Check stderr output for details" (subprocess_cli.py line 616),
-    and the actual subprocess stderr is discarded because
-    ClaudeAgentOptions.stderr defaults to None (line 378).
+    # 2. Well-known install locations
+    home = Path.home()
+    for name in ("claude.exe", "claude"):
+        candidate = home / ".local" / "bin" / name
+        if candidate.exists():
+            return candidate
+
+    # 3. PATH lookup
+    found = shutil.which("claude")
+    if found:
+        return Path(found)
+
+    return None
+
+
+def run_flush(context: str) -> str:
+    """Call claude CLI in print mode to extract knowledge from conversation context.
+
+    Bypasses the Agent SDK entirely — the SDK's bundled CLI intermittently
+    exits with code 1 during PreCompact hooks, and the SDK's error handling
+    swallows the real stderr (hardcoded "Check stderr output for details").
+    Direct subprocess call gives us real stderr capture and eliminates the
+    SDK as a failure point.  See Mercury #232.
     """
-    logging.error("[bundled-cli stderr] %s", line)
-
-
-async def run_flush(context: str) -> str:
-    """Use Claude Agent SDK to extract important knowledge from conversation context."""
-    from claude_agent_sdk import (
-        AssistantMessage,
-        ClaudeAgentOptions,
-        ResultMessage,
-        TextBlock,
-        query,
-    )
 
     prompt = f"""Review the conversation context below and respond with a concise summary
 of important items that should be preserved in the daily log.
@@ -140,57 +140,59 @@ respond with exactly: FLUSH_OK
 
 {context}"""
 
-    response = ""
+    claude_exe = _find_claude_exe()
+    if not claude_exe:
+        logging.error("claude executable not found")
+        return "FLUSH_ERROR: claude executable not found"
 
-    # Strip Mercury-specific env vars that confuse the nested bundled claude.exe.
-    # CLAUDE_CODE_USE_POWERSHELL_TOOL: makes the CLI shell out to PowerShell;
-    # nested invocations intermittently exit code 1 because the PowerShell context
-    # of the parent session is not available to the child. Root-cause confirmed via
-    # env-diagnostic in flush.log (2026-04-12 17:08:56 failure, Mercury #232).
-    # CLAUDE_PROJECT_DIR: inheriting the parent's project dir conflicts with cwd=ROOT.
-    # CLAUDE_CODE_ENTRYPOINT is already overridden to 'sdk-py' by the SDK itself.
-    # flush.py is a fire-once background process; mutating os.environ is safe here.
-    _STRIP_FOR_CHILD = ("CLAUDE_CODE_USE_POWERSHELL_TOOL", "CLAUDE_PROJECT_DIR")
-    for _var in _STRIP_FOR_CHILD:
-        os.environ.pop(_var, None)
+    logging.info("Using claude CLI: %s", claude_exe)
+
+    # Build clean environment: strip CLAUDE_*/MCP_* vars that cause the
+    # nested CLI to misbehave inside a live Claude Code session.
+    # Keep CLAUDE_INVOKED_BY so the child's hooks respect the recursion guard.
+    env = {}
+    for k, v in os.environ.items():
+        if k == "CLAUDE_INVOKED_BY":
+            env[k] = v
+        elif k.startswith(("CLAUDE_", "MCP_")):
+            continue
+        else:
+            env[k] = v
+
+    cmd = [str(claude_exe), "-p"]
+
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
     try:
-        async for message in query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(
-                cwd=str(ROOT),
-                allowed_tools=[],
-                max_turns=2,
-                stderr=_log_cli_stderr,
-            ),
-        ):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response += block.text
-            elif isinstance(message, ResultMessage):
-                pass
-    except Exception as e:
-        import traceback
-        logging.error("Agent SDK error: %s\n%s", e, traceback.format_exc())
-        # Diagnostic: dump Claude-related env vars on failure so PreCompact vs
-        # SessionEnd divergence can be isolated. Values truncated to 200 chars.
-        claude_env = {
-            k: v
-            for k, v in os.environ.items()
-            if k.startswith(("CLAUDE_", "MCP_", "ANTHROPIC_"))
-        }
-        logging.error(
-            "[env-diagnostic] %d Claude-related env vars present: %s",
-            len(claude_env),
-            sorted(claude_env.keys()),
+        result = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            env=env,
+            cwd=str(ROOT),
+            **kwargs,
         )
-        for k, v in sorted(claude_env.items()):
-            val = v[:200] if isinstance(v, str) else v
-            logging.error("[env-diagnostic] %s=%r", k, val)
-        response = f"FLUSH_ERROR: {type(e).__name__}: {e}"
+    except subprocess.TimeoutExpired:
+        logging.error("claude -p timed out after 120s")
+        return "FLUSH_ERROR: claude -p timed out after 120s"
+    except Exception as e:
+        logging.error("Failed to run claude -p: %s", e)
+        return f"FLUSH_ERROR: {type(e).__name__}: {e}"
 
-    return response
+    if result.returncode != 0:
+        stderr_text = (result.stderr or "").strip()
+        logging.error("claude -p failed (rc=%d)", result.returncode)
+        if stderr_text:
+            for line in stderr_text.splitlines()[:20]:
+                logging.error("[claude stderr] %s", line)
+        return f"FLUSH_ERROR: claude -p exit code {result.returncode}: {stderr_text[:500]}"
+
+    return result.stdout.strip()
 
 
 COMPILE_AFTER_HOUR = 18  # 6 PM local time
@@ -285,7 +287,7 @@ def main():
     context_file = Path(sys.argv[1])
     session_id = sys.argv[2]
 
-    # Save project dir BEFORE run_flush() pops it from environ
+    # Save project dir before we enter run_flush() which strips CLAUDE_* env vars
     saved_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
 
     # Detect trigger source from context file naming convention:
@@ -324,7 +326,7 @@ def main():
     logging.info("Flushing session %s: %d chars", session_id, len(context))
 
     # Run the LLM extraction
-    response = asyncio.run(run_flush(context))
+    response = run_flush(context)
 
     # Append to daily log
     if "FLUSH_OK" in response:

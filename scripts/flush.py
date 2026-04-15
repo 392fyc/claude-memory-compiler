@@ -242,7 +242,11 @@ def maybe_trigger_compilation() -> None:
 
     kwargs: dict = {}
     if sys.platform == "win32":
-        kwargs["creationflags"] = _sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS
+        # CREATE_NO_WINDOW suppresses the console window without breaking
+        # subprocess I/O. DETACHED_PROCESS caused intermittent terminal flashes
+        # on Windows 11 — root cause of the ~2h observation window flashes
+        # reported by Mercury S54.
+        kwargs["creationflags"] = _sp.CREATE_NO_WINDOW
     else:
         kwargs["start_new_session"] = True
 

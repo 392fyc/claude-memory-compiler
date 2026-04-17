@@ -110,15 +110,23 @@ def test_cross_session_recall(py: str) -> None:
     reads = [json.loads(l[5:]) for l in read_out.stdout.splitlines() if l.startswith("READ ")]
     count = reads[0]["count"] if reads else 0
     memories = reads[0].get("memories", []) if reads else []
-    # Require both quantity AND content match — scan ALL returned hits (not
-    # just the top), so sort-order wobble in mem0/Qdrant cannot cause a
-    # spurious failure when the target memory is present but not ranked #1.
-    matched = any(isinstance(m, str) and "Phase C fact" in m for m in memories)
+    # Require a strict per-fact match against the distinct identifiers each
+    # writer fact carries. "Phase C fact" alone is too loose — anything
+    # starting with that prefix would satisfy it. We check for at least one
+    # of the three fact-specific markers ("alpha: Mercury", "beta: AgentKB
+    # bridge", "gamma: Qdrant") so similar-but-wrong content cannot pass.
+    fact_markers = (
+        "alpha: Mercury",
+        "beta: AgentKB bridge",
+        "gamma: Qdrant",
+    )
+    matched_markers = [m for m in fact_markers
+                       if any(isinstance(x, str) and m in x for x in memories)]
     snippet = "; ".join((m or "")[:80] for m in memories[:3])
     check(
-        count >= 1 and matched,
-        "cross-session: reader recalls the exact fact written by the prior process",
-        f"count={count}, matched={matched}, memories=[{snippet}]",
+        count >= 1 and bool(matched_markers),
+        "cross-session: reader recalls at least one distinctively-keyed fact from the writer",
+        f"count={count}, matched_markers={matched_markers}, memories=[{snippet}]",
     )
 
 
@@ -329,6 +337,16 @@ def cleanup_test_users(py: str) -> dict:
     except json.JSONDecodeError as exc:
         warn("cleanup: CLEANUP line was not valid JSON", detail=str(exc))
         return {u: "malformed" for u in USERS_TO_CLEAN}
+    # Verify every user in USERS_TO_CLEAN appears in the subprocess response —
+    # a silent omission otherwise masks leaks from future mem0 API shape drift.
+    missing = [u for u in USERS_TO_CLEAN if u not in deleted]
+    if missing:
+        warn(
+            "cleanup: subprocess did not report on all test user_ids",
+            detail=f"missing={missing}",
+        )
+        for u in missing:
+            deleted[u] = "missing-from-report"
     failed = [u for u, v in deleted.items() if v != "ok"]
     if failed:
         warn(

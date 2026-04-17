@@ -76,7 +76,8 @@ sys.path.insert(0, r"{scripts}")
 import mem0_hooks
 user = sys.argv[1]
 hits = mem0_hooks.search_safe("Phase C alpha", user_id=user, limit=5)
-print("READ", json.dumps({{"count": len(hits), "top": (hits[0].get("memory") if hits else None)}}))
+memories = [h.get("memory") for h in hits if isinstance(h, dict)]
+print("READ", json.dumps({{"count": len(hits), "memories": memories}}))
 """
 
 
@@ -108,13 +109,16 @@ def test_cross_session_recall(py: str) -> None:
     )
     reads = [json.loads(l[5:]) for l in read_out.stdout.splitlines() if l.startswith("READ ")]
     count = reads[0]["count"] if reads else 0
-    top = (reads[0].get("top") or "") if reads else ""
-    # Require both quantity AND content match — otherwise a stray hit from a
-    # different user could silently satisfy the numeric check.
+    memories = reads[0].get("memories", []) if reads else []
+    # Require both quantity AND content match — scan ALL returned hits (not
+    # just the top), so sort-order wobble in mem0/Qdrant cannot cause a
+    # spurious failure when the target memory is present but not ranked #1.
+    matched = any(isinstance(m, str) and "Phase C fact" in m for m in memories)
+    snippet = "; ".join((m or "")[:80] for m in memories[:3])
     check(
-        count >= 1 and "Phase C fact" in top,
+        count >= 1 and matched,
         "cross-session: reader recalls the exact fact written by the prior process",
-        f"count={count}, top={top[:120]}",
+        f"count={count}, matched={matched}, memories=[{snippet}]",
     )
 
 
@@ -290,7 +294,13 @@ print("CLEANUP", json.dumps(deleted))
 
 
 def cleanup_test_users(py: str) -> dict:
-    """Delete all memories for each test user_id so repeated runs don't accrete."""
+    """Delete all memories for each test user_id so repeated runs don't accrete.
+
+    Cleanup failures raise a WARN (promotable to FAIL via strict mode) so the
+    report surfaces the leak instead of silently accruing vector rows on each
+    run. Covers: non-zero exit, missing CLEANUP output line, malformed JSON,
+    and per-user ERR values.
+    """
     if not USERS_TO_CLEAN:
         return {}
     if os.environ.get("MEM0_PHASE_C_SKIP_CLEANUP", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -301,8 +311,30 @@ def cleanup_test_users(py: str) -> dict:
         [py, "-c", _CLEANUP_SCRIPT.format(scripts=str(SCRIPTS_DIR)), *USERS_TO_CLEAN],
         env=env, capture_output=True, text=True, timeout=60, cwd=str(SCRIPTS_DIR.parent),
     )
+    if out.returncode != 0:
+        warn(
+            "cleanup: subprocess exited non-zero — test user memories may have leaked",
+            detail=f"rc={out.returncode} stderr={out.stderr.strip()[:200]}",
+        )
+        return {u: f"subprocess rc={out.returncode}" for u in USERS_TO_CLEAN}
     lines = [l for l in out.stdout.splitlines() if l.startswith("CLEANUP ")]
-    deleted = json.loads(lines[0][8:]) if lines else {}
+    if not lines:
+        warn(
+            "cleanup: subprocess produced no CLEANUP line — test user memories may have leaked",
+            detail=f"stdout={out.stdout.strip()[:200]}",
+        )
+        return {u: "no-output" for u in USERS_TO_CLEAN}
+    try:
+        deleted = json.loads(lines[0][8:])
+    except json.JSONDecodeError as exc:
+        warn("cleanup: CLEANUP line was not valid JSON", detail=str(exc))
+        return {u: "malformed" for u in USERS_TO_CLEAN}
+    failed = [u for u, v in deleted.items() if v != "ok"]
+    if failed:
+        warn(
+            "cleanup: per-user delete_all failed for some test user_ids",
+            detail=f"failed={failed}",
+        )
     ok_count = sum(1 for v in deleted.values() if v == "ok")
     print(f"cleanup: {ok_count}/{len(USERS_TO_CLEAN)} test user_ids purged")
     return deleted

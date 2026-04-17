@@ -5,8 +5,10 @@ missing, or the store errors mid-call, the bridge logs and returns a falsy
 value. It NEVER raises — the daily-log write is the source of truth and must
 not be blocked by memory-layer problems.
 
-Use ``MERCURY_MEM0_DISABLED=1`` to force no-op mode (for CI / test isolation
-/ rollback without uninstalling mem0ai).
+Use ``AGENTKB_MEM0_DISABLED=1`` (or the alias ``MERCURY_MEM0_DISABLED=1``) to
+force no-op mode — for CI / test isolation / rollback without uninstalling
+mem0ai. Values are parsed case-insensitively; ``0 / false / no / off`` (any
+case) count as not-disabled, everything else as disabled.
 """
 
 from __future__ import annotations
@@ -26,7 +28,13 @@ log = logging.getLogger("mem0_bridge")
 
 
 def _disabled() -> bool:
-    return os.environ.get("MERCURY_MEM0_DISABLED", "").strip() not in ("", "0", "false", "False")
+    # Accept both naming conventions so ops can toggle from either side. Case
+    # insensitive: "FALSE" / "False" / "false" all count as "not disabled".
+    for name in ("AGENTKB_MEM0_DISABLED", "MERCURY_MEM0_DISABLED"):
+        raw = os.environ.get(name, "").strip().lower()
+        if raw and raw not in ("0", "false", "no", "off"):
+            return True
+    return False
 
 
 def _load():

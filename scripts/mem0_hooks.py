@@ -122,8 +122,9 @@ def _coerce_str(content: Any) -> str | None:
     if isinstance(content, str):
         return content
     if isinstance(content, dict):
-        if "content" in content:
-            return str(content["content"])
+        piece = content.get("content")
+        if isinstance(piece, str):
+            return piece
         return None
     if isinstance(content, (list, tuple)):
         parts: list[str] = []
@@ -189,8 +190,11 @@ def search_safe(
     """Safe wrapper around Memory.search(). Never passes threshold (bug #4453)."""
     if not query or not query.strip():
         return []
+    # Clamp limit to a sane positive int — mem0 / Qdrant error out on 0, negative,
+    # or non-int inputs, and those failures then cascade through dedup_guard.
+    safe_limit = limit if isinstance(limit, int) and limit > 0 else 5
     mem = get_memory()
-    result = mem.search(query=query, user_id=user_id, limit=limit)
+    result = mem.search(query=query, user_id=user_id, limit=safe_limit)
     if isinstance(result, dict):
         rows = result.get("results", [])
         return rows if isinstance(rows, list) else []

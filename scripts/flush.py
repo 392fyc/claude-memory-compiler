@@ -348,6 +348,20 @@ def main():
     else:
         logging.info("Result: saved to daily log (%d chars)", len(response))
         append_to_daily_log(response, "Session")
+        # Additive mem0 ingest (Mercury #252 Phase B). Never raises — a
+        # memory-layer failure must not block the file-based archive above.
+        try:
+            import mem0_bridge  # local import keeps cold path cheap
+            trigger = "PreCompact" if is_precompact else "SessionEnd"
+            ok = mem0_bridge.ingest_session(
+                response,
+                session_id=session_id,
+                trigger=trigger,
+                project_dir=saved_project_dir,
+            )
+            logging.info("mem0 ingest: %s", "ok" if ok else "skipped")
+        except Exception as exc:
+            logging.warning("mem0 bridge unexpected error: %s: %s", type(exc).__name__, exc)
 
     # Update dedup state
     save_flush_state({"session_id": session_id, "timestamp": time.time()})

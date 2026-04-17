@@ -10,6 +10,8 @@ scripts/flush.log
 scripts/compile.log
 scripts/session-flush-*
 scripts/flush-context-*
+scripts/mem0-state/
+scripts/mem0.log
 
 # Generated content (built up per-user by hooks and scripts)
 daily/

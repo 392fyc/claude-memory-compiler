@@ -7,6 +7,10 @@ dependencies = [
     "claude-agent-sdk>=0.1.29",
     "python-dotenv>=1.0.0",
     "tzdata>=2024.1",
+    # Memory layer (Mercury #252 Phase B). Constrained ranges; v2.0.0b1 is
+    # still beta per research memory-layer-rebuild-2026-04-16.md.
+    "mem0ai>=1.0.11,<2.0.0",
+    "qdrant-client>=1.9.0",
 ]
 
 [tool.ruff]

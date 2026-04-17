@@ -28,6 +28,8 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REPORT = SCRIPTS_DIR / "phase-c-report.md"
 FAILURES: list[str] = []
+WARNINGS: list[str] = []
+USERS_TO_CLEAN: list[str] = []
 
 
 def check(cond: bool, label: str, detail: str = "") -> None:
@@ -36,6 +38,19 @@ def check(cond: bool, label: str, detail: str = "") -> None:
     print(f"{mark}  {label}{suffix}")
     if not cond:
         FAILURES.append(f"{label}{suffix}")
+
+
+def warn(label: str, detail: str = "") -> None:
+    """Record a WARN-level finding (not a failure, but surfaced in the report).
+
+    Opt-in escalation: set ``MEM0_PHASE_C_STRICT=1`` to treat WARN as FAIL for
+    CI runs that want zero-ambiguity signal.
+    """
+    suffix = f" — {detail}" if detail else ""
+    print(f"WARN  {label}{suffix}")
+    WARNINGS.append(f"{label}{suffix}")
+    if os.environ.get("MEM0_PHASE_C_STRICT", "").strip().lower() in ("1", "true", "yes", "on"):
+        FAILURES.append(f"(strict) WARN promoted: {label}{suffix}")
 
 
 # ----------------------------------------------------------------- test 1
@@ -67,6 +82,7 @@ print("READ", json.dumps({{"count": len(hits), "top": (hits[0].get("memory") if 
 
 def test_cross_session_recall(py: str) -> None:
     user = f"phase-c-{uuid.uuid4().hex[:8]}"
+    USERS_TO_CLEAN.append(user)
     env = dict(os.environ)
     write_out = subprocess.run(
         [py, "-c", _WRITE_SCRIPT.format(scripts=str(SCRIPTS_DIR)), user],
@@ -92,7 +108,14 @@ def test_cross_session_recall(py: str) -> None:
     )
     reads = [json.loads(l[5:]) for l in read_out.stdout.splitlines() if l.startswith("READ ")]
     count = reads[0]["count"] if reads else 0
-    check(count >= 1, "cross-session: reader recalls >= 1 fact written by prior process", f"count={count}")
+    top = (reads[0].get("top") or "") if reads else ""
+    # Require both quantity AND content match — otherwise a stray hit from a
+    # different user could silently satisfy the numeric check.
+    check(
+        count >= 1 and "Phase C fact" in top,
+        "cross-session: reader recalls the exact fact written by the prior process",
+        f"count={count}, top={top[:120]}",
+    )
 
 
 # ----------------------------------------------------------------- test 2
@@ -124,6 +147,16 @@ try:
         return _orig_send(self, request, *a, **kw)
 
     httpx.Client.send = _watched_send
+
+    _orig_async_send = httpx.AsyncClient.send
+
+    async def _watched_async_send(self, request, *a, **kw):
+        url = str(request.url)
+        if "posthog" in url.lower():
+            POSTHOG_HITS.append(url)
+        return await _orig_async_send(self, request, *a, **kw)
+
+    httpx.AsyncClient.send = _watched_async_send
 except ImportError:
     pass
 
@@ -152,6 +185,7 @@ print("TELEMETRY", json.dumps({{"posthog_hits": POSTHOG_HITS}}))
 
 def test_telemetry(py: str) -> None:
     user = f"phase-c-tel-{uuid.uuid4().hex[:8]}"
+    USERS_TO_CLEAN.append(user)
     env = dict(os.environ)
     out = subprocess.run(
         [py, "-c", _TELEMETRY_SCRIPT.format(scripts=str(SCRIPTS_DIR)), user],
@@ -208,6 +242,7 @@ print("REGRESSION", json.dumps(results))
 
 def test_regression(py: str) -> None:
     user = f"phase-c-reg-{uuid.uuid4().hex[:8]}"
+    USERS_TO_CLEAN.append(user)
     env = dict(os.environ)
     out = subprocess.run(
         [py, "-c", _REGRESSION_SCRIPT.format(scripts=str(SCRIPTS_DIR)), user],
@@ -220,13 +255,13 @@ def test_regression(py: str) -> None:
     for guard in ("4099_empty", "4099_ws", "4799_list", "4453_list"):
         check(results.get(guard) is True, f"regression: guard #{guard.split('_')[0]} {guard.split('_',1)[1]}")
     # #4536 dedup test is inconclusive when mem0's LLM fact-extraction drops
-    # the seed before storage — treat inconclusive as a warning, not a fail,
-    # and record the probe scores in the report so drift is visible.
+    # the seed before storage. Treat inconclusive as WARN (not FAIL), record
+    # the probe in the report so drift is visible, and let strict mode promote
+    # WARN to FAIL for CI runs that want zero-ambiguity signal.
     dedup = results.get("4536_dedup")
     if dedup is None:
         probe = results.get("_probe", [])
-        check(
-            True,
+        warn(
             "regression: guard #4536 dedup (INCONCLUSIVE — seed dropped by mem0 extraction)",
             detail=f"probe={probe}",
         )
@@ -237,13 +272,50 @@ def test_regression(py: str) -> None:
 # ----------------------------------------------------------------- main
 
 
+_CLEANUP_SCRIPT = """
+import os, sys, json
+sys.path.insert(0, r"{scripts}")
+import mem0_hooks
+users = sys.argv[1:]
+deleted = {{}}
+mem = mem0_hooks.get_memory()
+for u in users:
+    try:
+        mem.delete_all(user_id=u)
+        deleted[u] = "ok"
+    except Exception as exc:
+        deleted[u] = f"ERR: {{type(exc).__name__}}: {{exc}}"
+print("CLEANUP", json.dumps(deleted))
+"""
+
+
+def cleanup_test_users(py: str) -> dict:
+    """Delete all memories for each test user_id so repeated runs don't accrete."""
+    if not USERS_TO_CLEAN:
+        return {}
+    if os.environ.get("MEM0_PHASE_C_SKIP_CLEANUP", "").strip().lower() in ("1", "true", "yes", "on"):
+        print(f"cleanup: SKIPPED ({len(USERS_TO_CLEAN)} users, MEM0_PHASE_C_SKIP_CLEANUP=1)")
+        return {u: "skipped" for u in USERS_TO_CLEAN}
+    env = dict(os.environ)
+    out = subprocess.run(
+        [py, "-c", _CLEANUP_SCRIPT.format(scripts=str(SCRIPTS_DIR)), *USERS_TO_CLEAN],
+        env=env, capture_output=True, text=True, timeout=60, cwd=str(SCRIPTS_DIR.parent),
+    )
+    lines = [l for l in out.stdout.splitlines() if l.startswith("CLEANUP ")]
+    deleted = json.loads(lines[0][8:]) if lines else {}
+    ok_count = sum(1 for v in deleted.values() if v == "ok")
+    print(f"cleanup: {ok_count}/{len(USERS_TO_CLEAN)} test user_ids purged")
+    return deleted
+
+
 def main() -> int:
     if not os.environ.get("OPENAI_API_KEY"):
         print("OPENAI_API_KEY required")
         return 2
 
     py = sys.executable
-    print(f"Phase C validation — python={py}\n")
+    strict = os.environ.get("MEM0_PHASE_C_STRICT", "").strip().lower() in ("1", "true", "yes", "on")
+    print(f"Phase C validation — python={py}" + (" [STRICT]" if strict else "") + "\n")
 
     print("## 1. Cross-session recall")
     test_cross_session_recall(py)
@@ -252,22 +324,38 @@ def main() -> int:
     print("\n## 3. P1-bug regression")
     test_regression(py)
 
-    status = "PASS" if not FAILURES else "FAIL"
+    print("\n## Cleanup")
+    cleanup_result = cleanup_test_users(py)
+
+    if FAILURES:
+        status = "FAIL"
+    elif WARNINGS:
+        status = "WARN"
+    else:
+        status = "PASS"
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     report = [
         f"# Phase C validation report",
         "",
         f"- Timestamp: {stamp}",
         f"- Python: `{py}`",
-        f"- Status: **{status}**",
-        f"- Failures: {len(FAILURES)}",
+        f"- Status: **{status}** (strict-mode {'on' if strict else 'off'})",
+        f"- Failures: {len(FAILURES)}  |  Warnings: {len(WARNINGS)}",
+        f"- Test user_ids cleaned: {sum(1 for v in cleanup_result.values() if v == 'ok')}/{len(cleanup_result)}",
         "",
     ]
     if FAILURES:
         report.append("## Failed checks")
         report.extend(f"- {f}" for f in FAILURES)
-    else:
-        report.append("All cross-session / telemetry / regression checks passed.")
+        report.append("")
+    if WARNINGS:
+        report.append("## Warnings (inconclusive / drift signal)")
+        report.extend(f"- {w}" for w in WARNINGS)
+        report.append("")
+    if not FAILURES and not WARNINGS:
+        report.append("All cross-session / telemetry / regression checks passed with no drift warnings.")
+    elif not FAILURES:
+        report.append("No failures; warnings recorded above for operator review.")
     REPORT.write_text("\n".join(report) + "\n", encoding="utf-8")
     print(f"\nReport: {REPORT}  ({status})")
     return 0 if not FAILURES else 1

@@ -12,6 +12,7 @@ scripts/session-flush-*
 scripts/flush-context-*
 scripts/mem0-state/
 scripts/mem0.log
+scripts/phase-c-report.md
 
 # Generated content (built up per-user by hooks and scripts)
 daily/
